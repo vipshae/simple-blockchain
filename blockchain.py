@@ -1,6 +1,8 @@
 from time import time
 import hashlib
 import json
+from urllib.parse import urlparse
+import requests
 
 
 class Block(object):
@@ -44,8 +46,13 @@ class Blockchain(object):
     def __init__(self):
         self.chain = []
         self.currentTransactions = []
+        self.nodes = set()
+        self._chain_len = len(self.chain)
         # genesis block
         self.new_block(proof=100, previous_hash=1)
+
+    def __len__(self):
+        return self._chain_len
 
     def new_block(self, proof, previous_hash=None):
         """
@@ -99,6 +106,75 @@ class Blockchain(object):
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == '0000'
 
+    def register_node(self, address):
+        """
+        Add a new node to the list of nodes
+        :param address: <str> Address of node. Eg. 'http://192.168.0.5:5000'
+        :return: None
+        """
+        self.nodes.add(urlparse(address).netloc)
+
+    def valid_chain(self, chain):
+        """
+        Determine if a given blockchain is valid
+        :param chain: <list> A blockchain
+        :return: <bool> True if valid, False if not
+        """
+        last_block = chain[0]
+        current_index = 1
+
+        while current_index < len(chain):
+            block = chain[current_index]
+            print(f'{last_block}')
+            print(f'{block}')
+            print("\n-----------\n")
+
+            # check if hash of block is correct
+            if block['previous_hash'] != self.hash(last_block):
+                return False
+
+            # check if proof of work of block is correct
+            if not self.valid_proof(last_block['proof'], block['proof']):
+                return False
+
+            last_block = block
+            current_index += 1
+
+        return True
+
+    def resolve_conflicts(self):
+        """
+        This is our Consensus Algorithm, it resolves conflicts
+        by replacing our chain with the longest one in the network.
+        :return: <bool> True if our chain was replaced, False if not
+        """
+        neighbours = self.nodes
+        new_chain = None
+        max_len = len(self.chain)
+        length = 0
+        chain = None
+
+        # verify chains from all the nodes in the network
+        for node in neighbours:
+            if node is not None or node != '':
+                resp = requests.get(f'http://{node}/chain')
+            else:
+                continue
+            if resp.status_code == 200:
+                length = resp.json()['length']
+                chain = resp.json()['chain']
+
+            # check if len of neighbour chain is longer than self length and its chain is valid
+            if length >= max_len and self.valid_chain(chain):
+                new_chain = chain
+                max_len = length
+
+        # replace our chain if new chain was found
+        if new_chain:
+            self.chain = new_chain
+            return True
+
+        return False
 
     @staticmethod
     def hash(block):
