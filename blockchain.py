@@ -6,9 +6,9 @@ import requests
 
 
 class Block(object):
-    def __init__(self, index, transaction, proof, previous_hash=None):
+    def __init__(self, index, timestamp, transaction, proof, previous_hash=None):
         self.index = index
-        self.timestamp = time()
+        self.timestamp = timestamp or time()
         self.transaction = transaction
         self.proof = proof
         self.previous_hash = previous_hash
@@ -43,26 +43,41 @@ class Transaction(object):
 
 
 class Blockchain(object):
+    # difficulty of PoW algorithm
+    difficulty = 4
+
     def __init__(self):
         self.chain = []
         self.currentTransactions = []
         self.nodes = set()
         self._chain_len = len(self.chain)
         # genesis block
+        self.create_genesis_block()
+
+    def create_genesis_block(self):
+        """
+        A function to generate genesis block and appends it to
+        the chain. The block has index 0, previous_hash as 0, and
+        a valid hash.
+        """
         self.new_block(proof=100, previous_hash=1)
 
     def __len__(self):
         return self._chain_len
 
-    def new_block(self, proof, previous_hash=None):
+    def new_block(self, index=None, timestamp=None, transaction=None, proof=None, previous_hash=None):
         """
         Creates new block in the blockchain
+        :param timestamp:
+        :param index:
+        :param transaction:
         :param proof: proof given by proof of work algo <int>
         :param previous_hash: Hash of previous block <str>
         :return: new Block <dict>
         """
-        new_block = Block(index=len(self.chain)+1, transaction=self.currentTransactions, proof=proof,
-                         previous_hash=previous_hash or self.hash(self.chain[-1]))
+        new_block = Block(index=index or len(self.chain) + 1, timestamp=timestamp,
+                          transaction=transaction or self.currentTransactions,
+                          proof=proof, previous_hash=previous_hash or self.hash(self.chain[-1]))
 
         self.chain.append(new_block)
         # reset current transactions after adding new block
@@ -85,17 +100,17 @@ class Blockchain(object):
     def proof_of_work(self, last_proof):
         """
         Simple Proof of Work Algorithm:
-         - Find a number p' such that hash(pp') contains leading 4 zeroes, where p is the previous p'
+         - Find a number/nonce p' such that hash(pp') contains leading 4 zeroes, where p is the previous p'
          - p is the previous proof, and p' is the new proof
         :param last_proof: <int>
         :return: <int>
         """
         proof = 0
-        while self.valid_proof(last_proof, proof) is False:
+        while self.is_valid_proof(last_proof, proof) is False:
             proof += 1
         return proof
 
-    def valid_proof(self, last_proof, current_proof):
+    def is_valid_proof(self, last_proof, current_proof):
         """
         Validates the Proof: Does hash(last_proof, current_proof) contain 4 leading zeroes?
         :param last_proof:  <int> Previous Proof
@@ -104,7 +119,7 @@ class Blockchain(object):
         """
         guess = f'{last_proof}{current_proof}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
-        return guess_hash[:4] == '0000'
+        return guess_hash[:Blockchain.difficulty] == '0' * Blockchain.difficulty
 
     def register_node(self, address):
         """
@@ -134,7 +149,7 @@ class Blockchain(object):
                 return False
 
             # check if proof of work of block is correct
-            if not self.valid_proof(last_block['proof'], block['proof']):
+            if not self.is_valid_proof(last_block['proof'], block['proof']):
                 return False
 
             last_block = block
@@ -200,7 +215,7 @@ class ComplexEncoder(json.JSONEncoder):
             return json.JSONEncoder.default(self, obj)
 
 
-#sample block
+# sample block
 block = {
     'index': 1,
     'timestamp': 1506057125.900785,
