@@ -57,8 +57,7 @@ class Blockchain(object):
     def create_genesis_block(self):
         """
         A function to generate genesis block and appends it to
-        the chain. The block has index 0, previous_hash as 0, and
-        a valid hash.
+        the chain.
         """
         self.new_block(proof=100, previous_hash=1)
 

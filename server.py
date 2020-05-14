@@ -22,7 +22,7 @@ def mine():
 
     # forge new block by adding it to the chain
     prev_hash = blockchain.hash(blockchain.last_block)
-    new_block = blockchain.new_block(proof, prev_hash)
+    new_block = blockchain.new_block(proof=proof, previous_hash=prev_hash)
 
     # check for consensus with peer nodes and announce new block if current blockchain is longest
     curr_len = len(blockchain.chain)
@@ -48,7 +48,7 @@ def announce_new_block(block):
     respective chains.
     """
     for neighbour in blockchain.nodes:
-        url = '{}/blocks/add'.format(neighbour)
+        url = 'http://{}/blocks/add'.format(neighbour)
         requests.post(url, data=json.dumps(block, cls=ComplexEncoder))
 
 
@@ -119,7 +119,7 @@ def register_nodes():
     response = {
         'message': 'New nodes have been added',
         'peer_nodes': list(blockchain.nodes),
-        'blockchain': current_nodes_chain
+        'blockchain': json.loads(current_nodes_chain)
     }
     return json.dumps(response, cls=ComplexEncoder), 201
 
@@ -132,41 +132,49 @@ def register_with_existing_node():
     :return:
     """
     values = request.get_json()
-    node = values.get('node')
-    if not node:
+    remote_node = values.get('node')
+    if not remote_node:
         return 'Invalid request data', 400
 
     headers = {'Content-Type': "application/json"}
     data = {'nodes': [request.host_url]}
-    response = requests.post(node + '/nodes/register', data=json.dumps(data), headers=headers)
+    response = requests.post(remote_node + '/nodes/register', data=json.dumps(data), headers=headers)
 
     if response.status_code == 201:
         # build this nodes blockchain from the the remote's chain
         remote_chain_dump = response.json()['blockchain']['chain']
-        new_chain = create_chain_from_dump(remote_chain_dump)
 
+        # not just genesis block in the remote chain?
+        if len(remote_chain_dump) > 1:
+            for idx, block_data in enumerate(remote_chain_dump):
+                # genesis block is removed from current node
+                if idx == 0:
+                    blockchain.chain.pop(0)
+                for tr in block_data['transactions']:
+                    blockchain.new_transaction(tr['sender'], tr['receiver'], tr['amount'])
+                added_block = blockchain.new_block(index=block_data['index'], timestamp=block_data['timestamp'],
+                                                   proof=block_data['proof'], previous_hash=block_data['previous_hash'])
+                if not added_block:
+                    raise Exception('The chain dump was tampered')
         # register remote's peer nodes to this nodes new_chain peers
         remote_chain_peers = response.json()['peer_nodes']
         for peer in remote_chain_peers:
-            new_chain.register_node(peer)
+            blockchain.register_node(peer)
         # add the remote node if not present
-        if node not in blockchain.nodes:
-            new_chain.register_node(node)
+        if remote_node not in blockchain.nodes:
+            blockchain.register_node(remote_node)
     else:
         # if something goes wrong, pass it on to the API response
         return response.content, response.status_code
 
+    # get new chain contents
+    new_chain, status_code = full_chain()
 
-def create_chain_from_dump(chain_dump):
-    blockchain = Blockchain()
-    for idx, block_data in enumerate(chain_dump):
-        proof = block_data['proof']
-        prev_hash = block_data['previous_hash']
-        if idx > 0:
-            added_block = blockchain.new_block(proof, prev_hash)
-            if not added_block:
-                raise Exception('The chain dump was tampered')
-    return blockchain
+    response = {
+        'message': 'Blockchain has been registered with remote node',
+        'blockchain': json.loads(new_chain)
+    }
+    return json.dumps(response, cls=ComplexEncoder), 201
 
 
 @app.route('/nodes/resolve', methods=['GET'])
@@ -188,4 +196,20 @@ def consensus():
 
 if __name__ == '__main__':
     # runs on localhost port 5000
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='127.0.0.1', port=5000)
+
+    # export FLASK_APP=server.py
+    # flask run --port 5001
+    # flask run --port 5000
+
+    """
+    curl -X POST -H "Content-Type: application/json" -d '{
+     "sender": "d4ee26eee15148ee92c6cd394edd974e",
+     "recipient": "someone",
+     "amount": 5
+    }' "http://127.0.0.1:5000/transactions/new"
+    """
+
+    """
+    curl -X POST -H "Content-Type: application/json" -d '{"nodes": ["http://127.0.0.1:5001"]}' "http://127.0.0.1:5000/nodes/register"
+    """
