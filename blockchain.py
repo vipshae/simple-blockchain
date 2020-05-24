@@ -3,24 +3,13 @@ import hashlib
 import json
 from urllib.parse import urlparse
 import requests
-
-
-class Block(object):
-    def __init__(self, index, timestamp, transaction, proof, previous_hash=None):
-        self.index = index
-        self.timestamp = timestamp or time()
-        self.transaction = transaction
-        self.proof = proof
-        self.previous_hash = previous_hash
-
-    def get_details(self):
-        return {
-            'index': self.index,
-            'timestamp': self.timestamp,
-            'transactions': [t.get_details() for t in self.transaction],
-            'proof': self.proof,
-            'previous_hash': self.previous_hash
-        }
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives.serialization import PublicFormat
+from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+import cryptography.exceptions
 
 
 class Transaction(object):
@@ -41,10 +30,67 @@ class Transaction(object):
             'amount': self.amount
         }
 
+    def get_data_bytes(self):
+        return b'{self.sender}{self.receiver}{self.amount}'
+
+    def sign_transaction(self, private_value):
+        private_key_obj = ec.derive_private_key(private_value, ec.SECP256K1(), default_backend())
+        pub_key = private_key_obj.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo).hex()
+
+        if pub_key != self.sender:
+            raise Exception('You cannot sign transactions for other wallets')
+
+        data = self.get_data_bytes()
+        self.signature = private_key_obj.sign(data, ec.ECDSA(hashes.SHA256()))
+        return self.signature
+
+    def is_valid(self):
+        if self.sender == 'System':
+            return True
+        if self.signature is None or len(self.signature) == 0:
+            print('ERROR: No signature found in the transaction')
+            return False
+
+        # generate a pub key obj from the sender info
+        pub_key_obj = EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), bytes.fromhex(self.sender))
+        data = self.get_data_bytes()
+        try:
+            pub_key_obj.verify(self.signature, data, ec.ECDSA(hashes.SHA256()))
+        except cryptography.exceptions.InvalidSignature as exp:
+            print(exp)
+            return False
+        return True
+
+
+class Block(object):
+    def __init__(self, index, timestamp, transaction, proof, previous_hash=None):
+        self.index = index
+        self.timestamp = timestamp or time()
+        self.transaction = transaction
+        self.proof = proof
+        self.previous_hash = previous_hash
+
+    def get_details(self):
+        return {
+            'index': self.index,
+            'timestamp': self.timestamp,
+            'transactions': [t.get_details() for t in self.transaction],
+            'proof': self.proof,
+            'previous_hash': self.previous_hash
+        }
+
+    def has_valid_transaction(self):
+        for tr in self.transaction:
+            if not tr.is_valid():
+                return False
+        return True
 
 class Blockchain(object):
     # difficulty of PoW algorithm
     difficulty = 4
+
+    # mining reward given for mining blocks
+    mining_reward = 1
 
     def __init__(self):
         self.chain = []
@@ -83,9 +129,10 @@ class Blockchain(object):
         self.currentTransactions = []
         return new_block
 
-    def new_transaction(self, sender, receiver, amount):
+    def new_transaction(self, sender, receiver, amount, private_value=None):
         """
         adds new transaction to go in the next mined block
+        :param signing_key: Private key of node for signing the transaction
         :param sender: Address of sender <str>
         :param receiver: Address of receiver <str>
         :param amount: amount transferred <int>
@@ -93,6 +140,14 @@ class Blockchain(object):
         """
         new_transaction = Transaction()
         new_transaction.set_transaction(sender, receiver, amount)
+
+        # sign this transaction
+        if private_value and sender != 'System':
+            sign = new_transaction.sign_transaction(private_value)
+            if sign is None or len(sign) == 0:
+                raise Exception('Transaction could not be signed')
+
+        # add it to current transactions
         self.currentTransactions.append(new_transaction)
         return self.last_block.index + 1
 
@@ -138,32 +193,60 @@ class Blockchain(object):
         current_index = 1
 
         while current_index < len(chain):
-            block = chain[current_index]
+            new_block = chain[current_index]
             print(f'{last_block}')
-            print(f'{block}')
+            print(f'{new_block}')
             print("\n-----------\n")
 
+            # check if block has valid signed transactions
+            #TODO: new_block here is a json string, modify it to be type Block, or make has_valid_transaction take json
+            #string inputs
+            # if not new_block.has_valid_transaction():
+            #    return False
+
             # check if hash of block is correct
-            if block['previous_hash'] != self.hash(last_block):
+            if new_block['previous_hash'] != self.hash(last_block):
                 return False
 
             # check if proof of work of block is correct
-            if not self.is_valid_proof(last_block['proof'], block['proof']):
+            if not self.is_valid_proof(last_block['proof'], new_block['proof']):
                 return False
 
-            last_block = block
+            last_block = new_block
             current_index += 1
 
         return True
 
-    def resolve_conflicts(self):
+    def register_with_chain(self, remote_chain, private_value=None):
+        """
+        Create blockchain with the json remote chain
+        :param private_value:
+        :param remote_chain: chain json string
+        :return: None
+        """
+        # not just genesis block in the remote chain?
+        if len(remote_chain) >= 1:
+            for idx, block_data in enumerate(remote_chain):
+                # genesis block is removed from current node
+                if idx == 0:
+                    self.chain.pop(0)
+                for tr in block_data['transactions']:
+                    self.new_transaction(tr['sender'], tr['receiver'], tr['amount'], private_value)
+                added_block = self.new_block(index=block_data['index'], timestamp=block_data['timestamp'],
+                                             proof=block_data['proof'], previous_hash=block_data['previous_hash'])
+                if not added_block:
+                    raise Exception('The chain dump was tampered')
+        else:
+            raise Exception('The chain only contains genesis block')
+
+    def resolve_conflicts(self, private_value=None):
         """
         This is our Consensus Algorithm, it resolves conflicts
         by replacing our chain with the longest one in the network.
         :return: <bool> True if our chain was replaced, False if not
         """
         neighbours = self.nodes
-        new_chain = None
+        largest_chain = None
         max_len = len(self.chain)
         length = 0
         chain = None
@@ -179,13 +262,23 @@ class Blockchain(object):
                 chain = resp.json()['chain']
 
             # check if len of neighbour chain is longer than self length and its chain is valid
-            if length >= max_len and self.valid_chain(chain):
-                new_chain = chain
+            if length >= max_len:
+                largest_chain = chain
                 max_len = length
 
         # replace our chain if new chain was found
-        if new_chain:
-            self.chain = new_chain
+        if largest_chain:
+            # check if the peer chain is a valid chain before consensus
+            if not self.valid_chain(largest_chain):
+                print('The largest of the peers chain is not valid')
+                raise Exception('The largest of the peers chain is not valid')
+
+            # Replace our chain with this chain
+            try:
+                self.register_with_chain(largest_chain, private_value)
+            except Exception as exp:
+                print(exp)
+                raise Exception(exp)
             return True
 
         return False
