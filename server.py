@@ -240,7 +240,7 @@ if __name__ == '__main__':
     }' "http://127.0.0.1:5000/transactions/new"
     """
 
-    # Register peer Node
+    # Register peer Nodes
     """
     curl -X POST -H "Content-Type: application/json" -d '{"nodes": ["http://127.0.0.1:5001"]}' "http://127.0.0.1:5000/nodes/register"
     """
